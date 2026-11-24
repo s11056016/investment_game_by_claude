@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>十年理財人生</title>
+<script>
+/* =====================================================================
+ *  ★★★ 老師設定區 CONFIG ★★★
+ *  所有遊戲數值都集中在這裡，改這裡就能調整遊戲難度與內容。
+ *  （百分比一律用小數表示，例如 0.015 = 1.5%、-0.15 = -15%）
+ * ===================================================================== */
+const CONFIG = {
+  initialMoney: 10000,   // 初始資金（元）
+  yearlyIncome: 3000,    // 每年開始時的收入（元）
+  totalYears: 10,        // 總回合數（年）
+  inputStep: 100,        // 數字輸入框每次增減的金額
+
+  // ---- 四種資產 ----
+  assets: {
+    cash:    { name: '撲滿現金', icon: '🐷', color: '#FFB703', inflation: 0.02,
+               desc: '0% 報酬，每年因通膨購買力 -2%' },
+    deposit: { name: '銀行定存', icon: '🏦', color: '#219EBC', rate: 0.015,
+               desc: '固定 +1.5% / 年，很穩定' },
+    fund:    { name: '指數基金', icon: '📊', color: '#52B788', min: -0.15, max: 0.20,
+               desc: '每年隨機 -15% ～ +20%' },
+    stock:   { name: '單一飆股', icon: '🚀', color: '#FF595E', min: -0.50, max: 0.80,
+               desc: '每年隨機 -50% ～ +80%，刺激！' }
+  },
+
+  // ---- 保險 ----
+  insurance: { cost: 500 },        // 每年保費（元）
+
+  // ---- 緊急預備金機制 ----
+  forcedSellRate: 0.9,             // 被迫賣出投資時，只能拿回市值的 90%
+  forcedSellOrder: ['fund', 'stock'], // 被迫賣出的順序（先賣基金再賣飆股）
+
+  // ---- 事件卡 ----
+  // weight：抽中的相對機率（數字越大越容易抽到）
+  // tip：每張卡附的理財小知識
+  events: [
+    { id: 'sick', icon: '🏥', title: '生病住院', weight: 1,
+      cost: 4000, insuredCost: 500,
+      tip: '保險是用每年一點點的固定支出，換取大意外發生時的保障。' },
+    { id: 'phone', icon: '📱', title: '手機壞了', weight: 1,
+      cost: 2000,
+      tip: '生活中總有意外支出，平常要留一筆「緊急預備金」，才不用急著賣掉投資。' },
+    { id: 'prize', icon: '🏆', title: '比賽得獎', weight: 1,
+      gain: 2000,
+      tip: '意外之財可以先存起來或拿去投資，不要一下子全部花光！' },
+    { id: 'crash', icon: '📉', title: '股市大跌', weight: 1,
+      fundChange: -0.20, stockChange: -0.40,
+      tip: '股市有漲有跌，單一股票跌得比整體市場更兇，分散投資可以降低衝擊。' },
+    { id: 'boom', icon: '🌈', title: '景氣大好', weight: 1,
+      fundChange: 0.15,
+      tip: '景氣好時投資容易賺錢，但不要以為會永遠上漲喔！' },
+    { id: 'scam', icon: '🚨', title: '詐騙訊息', weight: 1,
+      amount: 3000,
+      message: '「投資虛擬貨幣，保證月賺 30%！先匯 3,000 元就能加入！」',
+      tip: '「保證獲利」、「穩賺不賠」、「高報酬零風險」都是詐騙關鍵字！有疑問就撥 165 反詐騙專線。' },
+    { id: 'inflation', icon: '🛒', title: '物價上漲', weight: 1,
+      cashChange: -0.03,
+      tip: '物價上漲時，同樣的錢能買的東西變少了，這就是「通貨膨脹」。' }
+  ],
+
+  // ---- 結算稱號判定門檻 ----
+  // avgStock：每年「飆股占總資產比例」的平均
+  // avgRisky：每年「基金 + 飆股」占比的平均
+  // swing：歷年「基金 + 飆股」占比的最大值 − 最小值（策略忽高忽低的程度）
+  // avgCats：平均每年有幾種資產的占比 ≥ 10%（分散程度，最多 4 種）
+  titleRules: {
+    allInStockAvg: 0.5,     // 飆股平均占比 ≥ 50% → 💥 梭哈大冒險家
+    rollerStockAvg: 0.25,   // 飆股平均占比 ≥ 25% → 🎢 雲霄飛車玩家
+    rollerSwing: 0.5,       // 或策略忽高忽低超過 50 個百分點 → 🎢
+    safeRiskyMax: 0.2,      // 基金+飆股平均 < 20% → 🐢 穩健守財奴
+    owlMinCategories: 2.5,  // 平均分散在 2.5 種以上資產 → 🦉 聰明分散家
+    categoryMinShare: 0.1   // 占比 ≥ 10% 才算「有放這種資產」
+  }
+};
+</script>
+
+<style>
+  /* ===== 整體風格：明亮、可愛、大字大按鈕，適合投影 ===== */
+  :root{
+    --bg1:#FFF4D6; --bg2:#DFF3FF;
+    --ink:#2B2D42; --muted:#6C757D;
+    --card:#FFFFFF; --accent:#7B61FF; --good:#2A9D8F; --bad:#E63946;
+    --radius:24px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; color:var(--ink);
+    font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC","Heiti TC",sans-serif;
+    font-size:20px; line-height:1.5;
+    background:linear-gradient(135deg,var(--bg1),var(--bg2)); min-height:100vh;
+  }
+  .wrap{max-width:1320px; margin:0 auto; padding:18px 22px 40px}
+  header{display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:12px}
+  h1{margin:0; font-size:42px; letter-spacing:2px}
+  h1 span{display:inline-block; animation:bounce 2s infinite}
+  @keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+  .seed-badge{background:#fff; border-radius:999px; padding:8px 18px; font-weight:bold; box-shadow:0 4px 0 rgba(0,0,0,.08)}
+  .panel{background:var(--card); border-radius:var(--radius); padding:20px 24px; box-shadow:0 8px 0 rgba(0,0,0,.06),0 10px 30px rgba(0,0,0,.06)}
+  h2{margin:0 0 12px; font-size:28px}
+
+  /* ===== 上方狀態列 ===== */
+  #stats{display:grid; grid-template-columns:repeat(7,1fr); gap:12px; margin-bottom:16px}
+  .stat{background:#fff; border-radius:18px; padding:10px 12px; text-align:center; box-shadow:0 5px 0 rgba(0,0,0,.06)}
+  .stat .lbl{font-size:16px; color:var(--muted)}
+  .stat .val{font-size:26px; font-weight:bold; white-space:nowrap}
+  .stat.big{background:var(--accent); color:#fff}
+  .stat.big .lbl{color:#E9E3FF}
+  .stat.year{background:#FFD166}
+
+  /* ===== 中間操作區 ===== */
+  .grid{display:grid; grid-template-columns:1.45fr 1fr; gap:16px; margin-bottom:16px}
+  .row{display:grid; grid-template-columns:56px 1fr 150px; gap:6px 12px; align-items:center; padding:12px 0; border-bottom:2px dashed #EEE}
+  .row:last-of-type{border-bottom:none}
+  .row .ic{font-size:40px; text-align:center; grid-row:span 2}
+  .row .nm{font-weight:bold; font-size:22px}
+  .row .ds{font-size:16px; color:var(--muted); font-weight:normal; margin-left:6px}
+  .row input[type=number]{width:150px; font-size:22px; padding:6px 8px; border-radius:12px; border:3px solid #DDD; text-align:right; font-family:inherit}
+  .row .cashval{font-size:24px; font-weight:bold; text-align:right}
+  input[type=range]{width:100%; height:30px; accent-color:var(--c,#7B61FF); cursor:pointer}
+  .quick{display:flex; flex-wrap:wrap; gap:10px; margin-top:10px}
+
+  .btn{font-family:inherit; font-size:22px; font-weight:bold; border:none; border-radius:999px; padding:12px 26px; cursor:pointer; color:#fff; background:var(--accent);
+       box-shadow:0 6px 0 rgba(0,0,0,.2); transition:transform .1s, box-shadow .1s}
+  .btn:active{transform:translateY(4px); box-shadow:0 2px 0 rgba(0,0,0,.2)}
+  .btn:disabled{background:#BBB; cursor:not-allowed}
+  .btn.small{font-size:18px; padding:8px 18px}
+  .btn.yellow{background:#FFB703; color:#3D2C00}
+  .btn.blue{background:#219EBC}
+  .btn.green{background:#2A9D8F}
+  .btn.red{background:#E63946}
+  .btn.huge{font-size:32px; padding:18px 40px; width:100%}
+
+  #pieBox{display:flex; align-items:center; gap:18px; justify-content:center; flex-wrap:wrap}
+  #pie{width:230px; height:230px}
+  .legend div{display:flex; align-items:center; gap:8px; font-size:19px; margin:4px 0}
+  .dot{width:20px; height:20px; border-radius:6px; display:inline-block}
+  .insure{display:flex; align-items:center; gap:14px; margin:16px 0; padding:14px 18px; border-radius:18px; background:#F1FAEE; cursor:pointer; font-size:21px; user-select:none}
+  .insure input{width:32px; height:32px; accent-color:var(--good); cursor:pointer}
+
+  /* ===== 折線圖 ===== */
+  #chartPanel canvas, #endChart{width:100%; display:block}
+  .chart-legend{display:flex; gap:28px; justify-content:center; font-size:18px; margin-top:6px}
+  .line-sample{display:inline-block; width:40px; height:0; border-top:5px solid var(--accent); vertical-align:middle; margin-right:6px}
+  .line-sample.dash{border-top:4px dashed #219EBC}
+
+  /* ===== 遮罩視窗 ===== */
+  .overlay{position:fixed; inset:0; background:rgba(30,30,60,.55); display:none; align-items:flex-start; justify-content:center; overflow-y:auto; padding:30px 16px; z-index:10}
+  .overlay.show{display:flex}
+  .modal{background:#fff; border-radius:32px; padding:28px 34px; width:min(960px,100%); box-shadow:0 20px 60px rgba(0,0,0,.3); animation:pop .35s ease}
+  @keyframes pop{from{transform:scale(.85); opacity:0} to{transform:scale(1); opacity:1}}
+  .modal h2{text-align:center; font-size:34px}
+  table.ret{width:100%; border-collapse:collapse; font-size:20px; margin-bottom:8px}
+  table.ret td, table.ret th{padding:6px 10px; text-align:right; border-bottom:2px solid #F0F0F0}
+  table.ret td:first-child, table.ret th:first-child{text-align:left}
+  .up{color:var(--good); font-weight:bold} .down{color:var(--bad); font-weight:bold}
+
+  /* ===== 事件卡翻牌動畫 ===== */
+  .card-stage{perspective:1200px; display:flex; justify-content:center; margin:14px 0}
+  .flipcard{width:340px; height:240px; position:relative}
+  .flip-inner{position:absolute; inset:0; transition:transform .8s cubic-bezier(.4,1.6,.5,1); transform-style:preserve-3d}
+  .flipcard.flipped .flip-inner{transform:rotateY(180deg)}
+  .face{position:absolute; inset:0; border-radius:26px; backface-visibility:hidden; -webkit-backface-visibility:hidden;
+        display:flex; flex-direction:column; align-items:center; justify-content:center; box-shadow:0 10px 0 rgba(0,0,0,.15)}
+  .face.back{background:repeating-linear-gradient(45deg,#7B61FF 0 18px,#9D8BFF 18px 36px); color:#fff; font-size:34px; font-weight:bold}
+  .face.back .q{font-size:80px}
+  .face.front{background:#FFF8E1; border:6px solid #FFB703; transform:rotateY(180deg)}
+  .face.front .eic{font-size:86px; line-height:1.1}
+  .face.front .etitle{font-size:36px; font-weight:bold}
+
+  .outcome{font-size:22px; text-align:center; margin:8px 0}
+  .warn{background:#FFE5E5; border:3px solid var(--bad); color:#9B1C24; border-radius:18px; padding:12px 16px; font-weight:bold; margin:10px 0; text-align:center}
+  .tip{background:#E7F6FF; border-left:8px solid #219EBC; border-radius:14px; padding:12px 16px; margin:10px 0; font-size:20px}
+  .scam-msg{background:#F4F4F4; border-radius:18px; padding:14px; font-size:22px; text-align:center; margin:8px 0}
+  .center{text-align:center} .hidden{display:none !important}
+  .btnrow{display:flex; gap:14px; justify-content:center; flex-wrap:wrap; margin-top:14px}
+
+  /* ===== 開始 / 結算畫面 ===== */
+  .rules{font-size:20px} .rules li{margin:4px 0}
+  .seed-input{font-size:24px; padding:8px 14px; border-radius:14px; border:3px solid #DDD; width:220px; font-family:inherit}
+  .bigstats{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin:14px 0}
+  .bigstats .stat .val{font-size:30px}
+  .badge{text-align:center; background:linear-gradient(135deg,#FFE29A,#FFB3C6); border-radius:26px; padding:16px; margin:12px 0}
+  .badge .em{font-size:90px; line-height:1.1}
+  .badge .tt{font-size:38px; font-weight:bold}
+  .qs{display:grid; gap:10px; margin:12px 0}
+  .qs div{background:#F3F0FF; border-radius:16px; padding:12px 18px; font-size:22px}
+
+  @media (max-width:1000px){
+    #stats{grid-template-columns:repeat(4,1fr)}
+    .grid{grid-template-columns:1fr}
+    .bigstats{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span>💰</span> 十年理財人生</h1>
+    <div class="seed-badge" id="seedBadge">🎲 亂數種子：—</div>
+  </header>
+
+  <!-- 上方狀態列 -->
+  <section id="stats"></section>
+
+  <!-- 中間操作區 -->
+  <main class="grid">
+    <section class="panel">
+      <h2>🧺 分配你的錢</h2>
+      <div id="allocRows"></div>
+      <div class="quick">
+        <button class="btn small yellow" onclick="quickSet('cash')">🐷 全部放回撲滿</button>
+        <button class="btn small blue" onclick="quickSet('deposit')">🏦 全部放定存</button>
+        <button class="btn small green" onclick="quickSet('even')">⚖️ 四種平均分</button>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>🥧 目前配置</h2>
+      <div id="pieBox">
+        <svg id="pie" viewBox="-110 -110 220 220"></svg>
+        <div class="legend" id="pieLegend"></div>
+      </div>
+      <label class="insure">
+        <input type="checkbox" id="insureBox" onchange="state.insured=this.checked; renderStats()">
+        <span>🛡️ 今年購買保險（保費 <b id="insCost"></b> 元）</span>
+      </label>
+      <button class="btn huge" id="passBtn" onclick="passYear()">⏩ 過一年！</button>
+    </section>
+  </main>
+
+  <!-- 下方折線圖 -->
+  <section class="panel" id="chartPanel">
+    <h2>📈 歷年總資產</h2>
+    <canvas id="chart" height="300"></canvas>
+    <div class="chart-legend">
+      <span><span class="line-sample"></span>我的總資產</span>
+      <span><span class="line-sample dash"></span>對照組：全部放定存</span>
+    </div>
+  </section>
+</div>
+
+<!-- ========== 開始畫面 ========== -->
+<div class="overlay show" id="startOverlay">
+  <div class="modal">
+    <h2>💰 歡迎來到「十年理財人生」</h2>
+    <ul class="rules" id="rulesList"></ul>
+    <div class="center" style="margin-top:16px">
+      <div style="font-size:20px; margin-bottom:6px">🎲 亂數種子（全班輸入同一組，市場與事件就會一模一樣；留白則隨機）</div>
+      <input class="seed-input" id="seedInput" placeholder="例如 2026">
+    </div>
+    <div class="btnrow"><button class="btn huge" onclick="startFromInput()">🚀 開始十年人生</button></div>
+  </div>
+</div>
+
+<!-- ========== 每年結算 + 事件卡 ========== -->
+<div class="overlay" id="eventOverlay">
+  <div class="modal">
+    <h2 id="evHeader">第 1 年結束</h2>
+    <div id="returnBox"></div>
+    <div class="card-stage">
+      <div class="flipcard" id="flipcard">
+        <div class="flip-inner">
+          <div class="face back"><div class="q">❓</div>命運卡</div>
+          <div class="face front"><div class="eic" id="evIcon"></div><div class="etitle" id="evTitle"></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="btnrow" id="flipRow"><button class="btn yellow" onclick="flipCard()">🎴 翻開命運卡</button></div>
+    <div id="scamBox" class="hidden">
+      <div class="scam-msg">📩 你收到一則訊息：<br><b id="scamText"></b></div>
+      <div class="btnrow">
+        <button class="btn red" onclick="answerScam(true)">😍 相信，馬上匯款</button>
+        <button class="btn green" onclick="answerScam(false)">🤔 不相信，刪除訊息</button>
+      </div>
+    </div>
+    <div id="outcomeBox" class="hidden"></div>
+    <div class="btnrow"><button class="btn hidden" id="nextBtn" onclick="endYear()">下一年 ➡️</button></div>
+  </div>
+</div>
+
+<!-- ========== 結算畫面 ========== -->
+<div class="overlay" id="endOverlay">
+  <div class="modal" id="endBox"></div>
+</div>
+
+<script>
+/* =====================================================================
+ *  以下是遊戲程式，一般不需要修改；要調數值請改上方 CONFIG
+ * ===================================================================== */
+
+// ---------- 小工具 ----------
+const $ = id => document.getElementById(id);
+const KEYS = ['cash', 'deposit', 'fund', 'stock'];   // 四種資產代號
+const fmt = n => Math.round(n).toLocaleString('zh-TW') + ' 元';
+const pct = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
+const signMoney = n => (n >= 0 ? '+' : '−') + Math.abs(Math.round(n)).toLocaleString('zh-TW') + ' 元';
+
+// ---------- 可重現的亂數（同一個種子 → 同樣的市場與事件） ----------
+function hashSeed(str) {               // 把文字種子轉成數字
+  let h = 2166136261 >>> 0;
+  for (const ch of String(str)) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function mulberry32(a) {               // 簡單又穩定的亂數產生器
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// 遊戲開始時就把 10 年的「基金報酬、飆股報酬、事件卡」全部先抽好，
+// 這樣不管學生怎麼操作，同一個種子的市場與事件都完全相同，方便全班比較策略。
+function buildSchedule(seed) {
+  const rng = mulberry32(hashSeed(seed));
+  const A = CONFIG.assets;
+  const totalW = CONFIG.events.reduce((s, e) => s + e.weight, 0);
+  const list = [];
+  for (let y = 0; y < CONFIG.totalYears; y++) {
+    const fund = A.fund.min + rng() * (A.fund.max - A.fund.min);
+    const stock = A.stock.min + rng() * (A.stock.max - A.stock.min);
+    let r = rng() * totalW, ev = CONFIG.events[CONFIG.events.length - 1];
+    for (const e of CONFIG.events) { if (r < e.weight) { ev = e; break; } r -= e.weight; }
+    list.push({ fund, stock, eventId: ev.id });
+  }
+  return list;
+}
+
+// ---------- 遊戲狀態 ----------
+let state = null;
+const total = () => KEYS.reduce((s, k) => s + state[k], 0);
+
+function startFromInput() {
+  const v = $('seedInput').value.trim();
+  startGame(v || randomSeed());
+}
+function randomSeed() { return String(Math.floor(100000 + Math.random() * 900000)); }
+
+function startGame(seed) {
+  state = {
+    seed, year: 0,
+    cash: CONFIG.initialMoney, deposit: 0, fund: 0, stock: 0,
+    insured: false,
+    schedule: buildSchedule(seed),
+    hist: [CONFIG.initialMoney],     // 每年年底的總資產（第 0 年 = 初始資金）
+    bench: [CONFIG.initialMoney],    // 對照組「全部放定存」
+    benchVal: CONFIG.initialMoney,
+    shares: [],                       // 每年的配置比例（判定稱號用）
+    yearChange: [],                   // 每年資產變化（找出最緊張的一年）
+    forcedCount: 0,                   // 被迫賣出次數
+    phase: 'allocate'
+  };
+  $('seedBadge').textContent = '🎲 亂數種子：' + seed;
+  ['startOverlay', 'endOverlay', 'eventOverlay'].forEach(id => $(id).classList.remove('show'));
+  startYear();
+}
+
+// 每年開始：發收入
+function startYear() {
+  state.year++;
+  state.cash += CONFIG.yearlyIncome;
+  state.benchVal += CONFIG.yearlyIncome;
+  state.yearStartTotal = total();
+  state.phase = 'allocate';
+  renderAll();
+}
+
+// ---------- 付款（緊急預備金機制） ----------
+// 先扣撲滿現金 → 再扣定存 → 還不夠就被迫賣基金/飆股（只拿回市值 90%）
+// 全部賣光仍不夠，撲滿變成負數（負債）
+function pay(amount) {
+  let need = amount, forced = false, loss = 0;
+  const fromCash = Math.min(Math.max(state.cash, 0), need);
+  state.cash -= fromCash; need -= fromCash;
+  const fromDep = Math.min(state.deposit, need);
+  state.deposit -= fromDep; need -= fromDep;
+  const rate = CONFIG.forcedSellRate;
+  for (const k of CONFIG.forcedSellOrder) {
+    if (need <= 0) break;
+    const h = state[k];
+    if (h <= 0) continue;
+    forced = true;
+    if (h * rate >= need) {           // 賣一部分就夠
+      const sold = need / rate;
+      state[k] = h - sold; loss += sold - need; need = 0;
+    } else {                          // 全部賣掉還不夠
+      state[k] = 0; loss += h - h * rate; need -= h * rate;
+    }
+  }
+  if (need > 0) state.cash -= need;   // 變成負債
+  roundAll();
+  if (forced) state.forcedCount++;
+  return { forced, loss, debt: need };
+}
+function roundAll() { KEYS.forEach(k => state[k] = Math.round(state[k])); }
+
+// ---------- 畫面：狀態列 ----------
+function renderStats() {
+  const A = CONFIG.assets;
+  let html = `<div class="stat year"><div class="lbl">📅 年份</div><div class="val">第 ${state.year} / ${CONFIG.totalYears} 年</div></div>
+              <div class="stat big"><div class="lbl">💎 總資產</div><div class="val">${fmt(total())}</div></div>`;
+  KEYS.forEach(k => {
+    const debt = state[k] < 0 ? '（負債）' : '';
+    html += `<div class="stat"><div class="lbl">${A[k].icon} ${A[k].name}</div><div class="val" style="color:${A[k].color}">${fmt(state[k])}${debt}</div></div>`;
+  });
+  html += `<div class="stat"><div class="lbl">🛡️ 保險</div><div class="val">${state.insured ? '✅ 有' : '❌ 沒有'}</div></div>`;
+  $('stats').innerHTML = html;
+}
+
+// ---------- 畫面：分配滑桿 ----------
+function buildAllocRows() {
+  const A = CONFIG.assets;
+  let html = `<div class="row"><div class="ic">${A.cash.icon}</div>
+      <div class="nm">${A.cash.name}<span class="ds">${A.cash.desc}（剩下沒分配的錢）</span></div>
+      <div class="cashval" id="cashVal" style="grid-row:span 2"></div><div style="font-size:16px;color:#6C757D">滑動下方滑桿，錢會從撲滿移出；往左拉就是賣出、錢回到撲滿。</div></div>`;
+  ['deposit', 'fund', 'stock'].forEach(k => {
+    html += `<div class="row"><div class="ic">${A[k].icon}</div>
+      <div class="nm">${A[k].name}<span class="ds">${A[k].desc}</span></div>
+      <input type="number" id="num_${k}" min="0" step="${CONFIG.inputStep}" onchange="setHolding('${k}', this.value)">
+      <input type="range" id="rng_${k}" min="0" step="1" style="--c:${A[k].color}; grid-column:2 / span 2" oninput="setHolding('${k}', this.value)">
+    </div>`;
+  });
+  $('allocRows').innerHTML = html;
+}
+
+// 設定某項投資的金額（多的錢從撲滿拿、少的錢回到撲滿；不能超過可用現金）
+function setHolding(k, v) {
+  if (state.phase !== 'allocate') return;
+  v = Math.round(Number(v) || 0);
+  const maxV = state[k] + Math.max(state.cash, 0);
+  v = Math.max(0, Math.min(v, maxV));
+  state.cash += state[k] - v;
+  state[k] = v;
+  renderAlloc(); renderPie(); renderStats();
+}
+
+// 快速按鈕
+function quickSet(mode) {
+  if (state.phase !== 'allocate') return;
+  const t = total();
+  if (t <= 0) return;
+  if (mode === 'cash') { state.cash = t; state.deposit = state.fund = state.stock = 0; }
+  if (mode === 'deposit') { state.deposit = t; state.cash = state.fund = state.stock = 0; }
+  if (mode === 'even') {
+    const q = Math.floor(t / 4);
+    state.deposit = state.fund = state.stock = q; state.cash = t - 3 * q;
+  }
+  renderAlloc(); renderPie(); renderStats();
+}
+
+function renderAlloc() {
+  const t = Math.max(total(), 0);
+  $('cashVal').textContent = fmt(state.cash);
+  $('cashVal').style.color = state.cash < 0 ? 'var(--bad)' : CONFIG.assets.cash.color;
+  ['deposit', 'fund', 'stock'].forEach(k => {
+    $('rng_' + k).max = t;
+    $('rng_' + k).value = state[k];
+    $('num_' + k).value = state[k];
+    $('rng_' + k).disabled = $('num_' + k).disabled = state.phase !== 'allocate';
+  });
+  $('insureBox').checked = state.insured;
+  $('insureBox').disabled = state.phase !== 'allocate';
+  $('passBtn').disabled = state.phase !== 'allocate';
+  $('passBtn').textContent = state.year >= CONFIG.totalYears ? '🏁 過完最後一年！' : '⏩ 過一年！';
+}
+
+// ---------- 畫面：圓餅圖（SVG） ----------
+function renderPie() {
+  const A = CONFIG.assets, R = 100;
+  const vals = KEYS.map(k => Math.max(state[k], 0));
+  const sum = vals.reduce((a, b) => a + b, 0);
+  let svg = '', legend = '';
+  if (sum <= 0) {
+    svg = `<circle r="${R}" fill="#DDD"/>`;
+  } else {
+    let a0 = -Math.PI / 2;
+    KEYS.forEach((k, i) => {
+      const f = vals[i] / sum;
+      if (f <= 0) return;
+      if (f > 0.9999) { svg += `<circle r="${R}" fill="${A[k].color}"/>`; return; }
+      const a1 = a0 + f * Math.PI * 2;
+      const large = f > 0.5 ? 1 : 0;
+      svg += `<path d="M0 0 L${R * Math.cos(a0)} ${R * Math.sin(a0)} A${R} ${R} 0 ${large} 1 ${R * Math.cos(a1)} ${R * Math.sin(a1)} Z" fill="${A[k].color}" stroke="#fff" stroke-width="3"/>`;
+      a0 = a1;
+    });
+  }
+  svg += `<circle r="42" fill="#fff"/><text text-anchor="middle" y="8" font-size="22" font-weight="bold" fill="#2B2D42">配置</text>`;
+  KEYS.forEach((k, i) => {
+    const p = sum > 0 ? Math.round(vals[i] / sum * 100) : 0;
+    legend += `<div><span class="dot" style="background:${A[k].color}"></span>${A[k].icon} ${A[k].name}　<b>${p}%</b></div>`;
+  });
+  $('pie').innerHTML = svg;
+  $('pieLegend').innerHTML = legend;
+}
+
+// ---------- 畫面：折線圖（Canvas 自己畫） ----------
+function drawChart(canvas, data, bench) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = Number(canvas.getAttribute('height'));
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const pad = { l: 90, r: 24, t: 20, b: 44 };
+  const N = CONFIG.totalYears;
+  // 讓 Y 軸刻度是好讀的整數（例如 10,000、20,000）
+  const rawMax = Math.max(...data, ...bench, 1) * 1.1;
+  const rawMin = Math.min(0, ...data, ...bench);
+  const mag = Math.pow(10, Math.floor(Math.log10((rawMax - rawMin) / 5)));
+  const stepV = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s * 5 >= rawMax - rawMin);
+  const minV = Math.floor(rawMin / stepV) * stepV;
+  const maxV = minV + stepV * 5 >= rawMax ? minV + stepV * 5 : Math.ceil(rawMax / stepV) * stepV;
+  const x = i => pad.l + (W - pad.l - pad.r) * i / N;
+  const y = v => pad.t + (H - pad.t - pad.b) * (1 - (v - minV) / (maxV - minV));
+
+  // 格線與座標
+  ctx.font = '16px "Microsoft JhengHei", sans-serif';
+  ctx.fillStyle = '#6C757D'; ctx.strokeStyle = '#EEE'; ctx.lineWidth = 1;
+  for (let v = minV; v <= maxV + 0.5; v += stepV) {
+    ctx.beginPath(); ctx.moveTo(pad.l, y(v)); ctx.lineTo(W - pad.r, y(v)); ctx.stroke();
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(Math.round(v).toLocaleString('zh-TW'), pad.l - 10, y(v));
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let i = 0; i <= N; i++) ctx.fillText(i === 0 ? '開始' : '第' + i + '年', x(i), H - pad.b + 12);
+
+  // 畫線（dash=true 為虛線）
+  function line(arr, color, width, dash) {
+    if (arr.length === 0) return;
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'round';
+    ctx.setLineDash(dash ? [12, 8] : []);
+    ctx.beginPath();
+    arr.forEach((v, i) => i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v)));
+    ctx.stroke(); ctx.restore();
+    ctx.fillStyle = color;
+    arr.forEach((v, i) => { ctx.beginPath(); ctx.arc(x(i), y(v), dash ? 4 : 7, 0, Math.PI * 2); ctx.fill(); });
+  }
+  line(bench, '#219EBC', 4, true);
+  line(data, '#7B61FF', 5, false);
+  // 標示最新數值
+  const last = data.length - 1;
+  ctx.fillStyle = '#7B61FF'; ctx.font = 'bold 18px "Microsoft JhengHei", sans-serif';
+  ctx.textAlign = last > N / 2 ? 'right' : 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillText(Math.round(data[last]).toLocaleString('zh-TW'), x(last) + (last > N / 2 ? -10 : 10), y(data[last]) - 8);
+}
+
+function renderAll() {
+  renderStats(); renderAlloc(); renderPie();
+  drawChart($('chart'), state.hist, state.bench);
+}
+
+// ---------- 過一年：計算報酬 ----------
+function passYear() {
+  if (state.phase !== 'allocate') return;
+  state.phase = 'event';
+  const A = CONFIG.assets, s = state.schedule[state.year - 1];
+  const t = total();
+
+  // 記錄今年的配置比例（判定稱號用）
+  const sh = {};
+  KEYS.forEach(k => sh[k] = t > 0 ? Math.max(state[k], 0) / t : 0);
+  state.shares.push(sh);
+
+  // 1) 計算投資報酬
+  const before = {}; KEYS.forEach(k => before[k] = state[k]);
+  const rates = { cash: -A.cash.inflation, deposit: A.deposit.rate, fund: s.fund, stock: s.stock };
+  if (state.cash > 0) state.cash *= 1 + rates.cash;   // 負債不計通膨
+  state.deposit *= 1 + rates.deposit;
+  state.fund *= 1 + rates.fund;
+  state.stock *= 1 + rates.stock;
+  roundAll();
+
+  // 對照組：全部放定存
+  state.benchVal = Math.round(state.benchVal * (1 + A.deposit.rate));
+
+  // 報酬表
+  let rows = '';
+  KEYS.forEach(k => {
+    const d = state[k] - before[k];
+    const cls = rates[k] >= 0 ? 'up' : 'down';
+    const note = k === 'cash' ? '（通膨，購買力）' : '';
+    rows += `<tr><td>${A[k].icon} ${A[k].name}${note}</td><td>${fmt(before[k])}</td>
+             <td class="${cls}">${pct(rates[k])}</td><td class="${d >= 0 ? 'up' : 'down'}">${signMoney(d)}</td><td><b>${fmt(state[k])}</b></td></tr>`;
+  });
+  let extra = '';
+  // 2) 保險費
+  if (state.insured) {
+    const r = pay(CONFIG.insurance.cost);
+    extra += `<div class="outcome">🛡️ 支付保險費 <b class="down">−${CONFIG.insurance.cost.toLocaleString('zh-TW')} 元</b></div>`;
+    if (r.forced) extra += forcedWarn(r);
+  }
+  $('evHeader').textContent = `📅 第 ${state.year} 年結束`;
+  $('returnBox').innerHTML = `<table class="ret"><tr><th>項目</th><th>年初</th><th>報酬率</th><th>變化</th><th>年底</th></tr>${rows}</table>${extra}`;
+
+  // 3) 準備事件卡（先蓋著）
+  state.currentEvent = CONFIG.events.find(e => e.id === s.eventId);
+  $('evIcon').textContent = state.currentEvent.icon;
+  $('evTitle').textContent = state.currentEvent.title;
+  $('flipcard').classList.remove('flipped');
+  $('flipRow').classList.remove('hidden');
+  $('scamBox').classList.add('hidden');
+  $('outcomeBox').classList.add('hidden');
+  $('nextBtn').classList.add('hidden');
+  $('eventOverlay').classList.add('show');
+  $('eventOverlay').scrollTop = 0;
+  renderStats(); renderAlloc(); renderPie();
+}
+
+function forcedWarn(r) {
+  let w = `<div class="warn">⚠️ 因為沒有足夠預備金，你被迫賠錢賣出投資！（多損失 ${fmt(r.loss)}）`;
+  if (r.debt > 0) w += `<br>💸 賣光投資還不夠，你欠了 ${fmt(r.debt)}！`;
+  return w + '</div>';
+}
+
+// ---------- 翻牌並套用事件 ----------
+function flipCard() {
+  $('flipRow').classList.add('hidden');
+  $('flipcard').classList.add('flipped');
+  setTimeout(resolveEvent, 850);   // 等翻牌動畫結束
+}
+
+function resolveEvent() {
+  const e = state.currentEvent;
+  let msg = '', r = null;
+  switch (e.id) {
+    case 'sick': {
+      const c = state.insured ? e.insuredCost : e.cost;
+      r = pay(c);
+      msg = state.insured
+        ? `還好你有買保險！醫療費只要自付 <b class="down">${fmt(c)}</b> 😮‍💨`
+        : `沒有保險，醫療費要自己付 <b class="down">${fmt(c)}</b> 😷`;
+      state.benchVal -= e.cost;   // 對照組：沒買保險
+      break;
+    }
+    case 'phone':
+      r = pay(e.cost);
+      msg = `修手機花了 <b class="down">${fmt(e.cost)}</b> 📱💔`;
+      state.benchVal -= e.cost;
+      break;
+    case 'prize':
+      state.cash += e.gain;
+      msg = `恭喜！獲得獎金 <b class="up">${fmt(e.gain)}</b>，已放進撲滿 🎉`;
+      state.benchVal += e.gain;
+      break;
+    case 'crash': {
+      const df = state.fund * e.fundChange, ds = state.stock * e.stockChange;
+      state.fund += df; state.stock += ds; roundAll();
+      msg = `基金 <b class="down">${pct(e.fundChange)}</b>（${signMoney(df)}）、飆股 <b class="down">${pct(e.stockChange)}</b>（${signMoney(ds)}）😱`;
+      break;
+    }
+    case 'boom': {
+      const df = state.fund * e.fundChange;
+      state.fund += df; roundAll();
+      msg = `基金 <b class="up">${pct(e.fundChange)}</b>（${signMoney(df)}）🥳`;
+      break;
+    }
+    case 'inflation': {
+      const dc = state.cash > 0 ? state.cash * e.cashChange : 0;
+      state.cash += dc; roundAll();
+      msg = `撲滿現金購買力額外 <b class="down">${pct(e.cashChange)}</b>（${signMoney(dc)}）🛒`;
+      break;
+    }
+    case 'scam':
+      $('scamText').textContent = e.message;
+      $('scamBox').classList.remove('hidden');
+      return;   // 等學生選擇
+  }
+  showOutcome(msg, r, e.tip);
+}
+
+function answerScam(believe) {
+  const e = state.currentEvent;
+  $('scamBox').classList.add('hidden');
+  let msg, r = null;
+  if (believe) {
+    r = pay(e.amount);
+    msg = `你匯出 <b class="down">${fmt(e.amount)}</b> 後，對方就封鎖你了……錢再也拿不回來 😭`;
+  } else {
+    msg = `👍 做得好！你識破了詐騙，一毛錢都沒損失！`;
+  }
+  showOutcome(msg, r, '🛑 防詐小提醒：' + e.tip + '<br>📌 天下沒有白吃的午餐：報酬越高，風險一定越高；「保證」高報酬的一定有問題。');
+}
+
+function showOutcome(msg, r, tip) {
+  let html = `<div class="outcome">${msg}</div>`;
+  if (r && r.forced) html += forcedWarn(r);
+  html += `<div class="tip">💡 理財小知識：${tip}</div>`;
+  $('outcomeBox').innerHTML = html;
+  $('outcomeBox').classList.remove('hidden');
+  $('nextBtn').textContent = state.year >= CONFIG.totalYears ? '🏁 看結算結果' : `➡️ 進入第 ${state.year + 1} 年`;
+  $('nextBtn').classList.remove('hidden');
+  renderStats(); renderPie(); renderAlloc();
+}
+
+// ---------- 年底收尾 ----------
+function endYear() {
+  $('eventOverlay').classList.remove('show');
+  state.hist.push(total());
+  state.bench.push(state.benchVal);
+  state.yearChange.push(total() - state.yearStartTotal);
+  if (state.year >= CONFIG.totalYears) {
+    drawChart($('chart'), state.hist, state.bench);
+    showEnd();
+  } else {
+    startYear();
+  }
+}
+
+// ---------- 結算 ----------
+function judgeTitle() {
+  const R = CONFIG.titleRules, S = state.shares;
+  const avg = f => S.reduce((s, x) => s + f(x), 0) / S.length;
+  const avgStock = avg(x => x.stock);
+  const avgFund = avg(x => x.fund);
+  const risky = S.map(x => x.fund + x.stock);
+  const avgRisky = avg(x => x.fund + x.stock);
+  const swing = Math.max(...risky) - Math.min(...risky);
+  const avgCats = avg(x => KEYS.filter(k => x[k] >= R.categoryMinShare).length);
+  const info = { avgStock, avgFund, avgRisky, swing, avgCats };
+
+  // 判定順序：梭哈 → 雲霄飛車 → 守財奴 → 分散家
+  if (avgStock >= R.allInStockAvg)
+    return { ...info, em: '💥', name: '梭哈大冒險家', desc: '你把大部分的錢都押在單一飆股上！賺的時候很爽，賠的時候很痛。記得：雞蛋不要放在同一個籃子裡。' };
+  if (avgStock >= R.rollerStockAvg || swing >= R.rollerSwing)
+    return { ...info, em: '🎢', name: '雲霄飛車玩家', desc: '你的資產起起伏伏、策略忽高忽低，很刺激！試著訂一個固定的配置比例，不要被一時的漲跌牽著走。' };
+  if (avgRisky < R.safeRiskyMax)
+    return { ...info, em: '🐢', name: '穩健守財奴', desc: '你很少冒險，錢大多在撲滿或定存。安全感滿滿，但要小心通膨慢慢吃掉購買力喔！' };
+  if (avgCats >= R.owlMinCategories)
+    return { ...info, em: '🦉', name: '聰明分散家', desc: '你把錢分散在不同地方，有保守也有積極，懂得用分散投資降低風險，非常聰明！' };
+  return avgRisky >= 0.5
+    ? { ...info, em: '🎢', name: '雲霄飛車玩家', desc: '你把大部分的錢放在會漲跌的投資上，起伏比較大。可以再多分散一點，並留些預備金。' }
+    : { ...info, em: '🐢', name: '穩健守財奴', desc: '你偏向保守穩健。安全很重要，但也可以試著小額參與投資，讓錢幫你工作。' };
+}
+
+function showEnd() {
+  state.phase = 'end';
+  const fin = total();
+  const principal = CONFIG.initialMoney + CONFIG.yearlyIncome * CONFIG.totalYears;  // 投入本金
+  const ret = (fin - principal) / principal;
+  const diff = fin - state.benchVal;
+  const t = judgeTitle();
+
+  // 找出資產變化最差的一年，當作反思提示
+  let worst = 0;
+  state.yearChange.forEach((v, i) => { if (v < state.yearChange[worst]) worst = i; });
+  const worstHint = state.yearChange[worst] < 0
+    ? `（提示：第 ${worst + 1} 年你的資產變化最差，${signMoney(state.yearChange[worst])}）` : '';
+  const forcedHint = state.forcedCount > 0
+    ? `（提示：這十年你一共被迫賠錢賣出投資 ${state.forcedCount} 次）` : '（提示：這十年你都沒有被迫賣出投資，預備金發揮作用了！）';
+
+  $('endBox').innerHTML = `
+    <h2>🎊 十年過去了！結算時間</h2>
+    <div class="bigstats">
+      <div class="stat big"><div class="lbl">💎 最終資產</div><div class="val">${fmt(fin)}</div></div>
+      <div class="stat"><div class="lbl">📊 報酬率（本金 ${fmt(principal)}）</div><div class="val ${ret >= 0 ? 'up' : 'down'}">${pct(ret)}</div></div>
+      <div class="stat"><div class="lbl">🏦 和「全放定存」比</div><div class="val ${diff >= 0 ? 'up' : 'down'}">${diff >= 0 ? '多 ' : '少 '}${fmt(Math.abs(diff))}</div></div>
+    </div>
+    <div class="center" style="font-size:17px;color:#6C757D">對照組「全放定存」最終 ${fmt(state.benchVal)}（同樣的收入與生活事件、沒買保險、沒被詐騙）</div>
+    <div class="badge"><div class="em">${t.em}</div><div class="tt">${t.name}</div><div style="font-size:20px;margin-top:6px">${t.desc}</div>
+      <div style="font-size:16px;margin-top:8px;color:#5A4A00">飆股平均占比 ${Math.round(t.avgStock * 100)}%｜基金平均占比 ${Math.round(t.avgFund * 100)}%｜平均分散在 ${t.avgCats.toFixed(1)} 種資產</div></div>
+    <canvas id="endChart" height="260"></canvas>
+    <div class="chart-legend"><span><span class="line-sample"></span>我的總資產</span><span><span class="line-sample dash"></span>全部放定存</span></div>
+    <h2 style="margin-top:18px">🤔 想一想</h2>
+    <div class="qs">
+      <div>1️⃣ 哪一年你最緊張？為什麼？<br><span style="font-size:17px;color:#6C757D">${worstHint}</span></div>
+      <div>2️⃣ 如果重來一次，你會改變什麼策略？</div>
+      <div>3️⃣ 你覺得「緊急預備金」重要嗎？<br><span style="font-size:17px;color:#6C757D">${forcedHint}</span></div>
+    </div>
+    <div class="btnrow">
+      <button class="btn" onclick="startGame(randomSeed())">🔄 再玩一次（新的市場）</button>
+      <button class="btn yellow" onclick="startGame(state.seed)">🎲 使用相同亂數種子重玩（${state.seed}）</button>
+    </div>`;
+  $('endOverlay').classList.add('show');
+  $('endOverlay').scrollTop = 0;
+  drawChart($('endChart'), state.hist, state.bench);
+}
+
+// ---------- 初始化 ----------
+function init() {
+  const A = CONFIG.assets;
+  $('insCost').textContent = CONFIG.insurance.cost.toLocaleString('zh-TW');
+  $('rulesList').innerHTML = `
+    <li>👛 你一開始有 <b>${fmt(CONFIG.initialMoney)}</b>，每年開始還會多 <b>${fmt(CONFIG.yearlyIncome)}</b> 收入，一共要過 <b>${CONFIG.totalYears} 年</b>。</li>
+    <li>${A.cash.icon} ${A.cash.name}：${A.cash.desc}</li>
+    <li>${A.deposit.icon} ${A.deposit.name}：${A.deposit.desc}</li>
+    <li>${A.fund.icon} ${A.fund.name}：${A.fund.desc}</li>
+    <li>${A.stock.icon} ${A.stock.name}：${A.stock.desc}</li>
+    <li>🛡️ 保險：每年 ${fmt(CONFIG.insurance.cost)}，生病時能幫你省下大筆醫藥費。</li>
+    <li>🎴 每年結束會抽一張命運卡。如果要花錢卻沒有預備金，就會被迫用 <b>${Math.round(CONFIG.forcedSellRate * 100)}%</b> 的價格賣掉投資！</li>`;
+  buildAllocRows();
+  // 開始畫面背後先放一個預覽狀態
+  state = { seed: '—', year: 0, cash: CONFIG.initialMoney, deposit: 0, fund: 0, stock: 0, insured: false,
+            hist: [CONFIG.initialMoney], bench: [CONFIG.initialMoney], phase: 'preview' };
+  renderAll();
+  $('seedInput').addEventListener('keydown', ev => { if (ev.key === 'Enter') startFromInput(); });
+}
+window.addEventListener('resize', () => {
+  if (!state) return;
+  drawChart($('chart'), state.hist, state.bench);
+  if ($('endOverlay').classList.contains('show')) drawChart($('endChart'), state.hist, state.bench);
+});
+init();
+</script>
+</body>
+</html>
